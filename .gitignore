@@ -226,5 +226,7 @@ src/DataSets/AdditionalPrototypes/*
 src/Outputs/
 # DINOv3 weights (gated, download separately)
 *.pth
+src/Models/*
+!src/Models/README.md
 # ViT-H+ feature files are generated locally with PreprocessImages.py (FeatureExtractor = "DINOv3-H16plus")
 *_DINOv3-H16plusFeatures.h5
