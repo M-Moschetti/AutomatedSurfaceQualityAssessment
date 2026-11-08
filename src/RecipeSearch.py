@@ -12,12 +12,12 @@ image counts as polished and at most MaxUncertain_Percent of the tiles are uncer
 Search: the start times are tried first (doubled until they polish, up to MaxTime_s). Then the 3 µm and the 1 µm time are
 bisected alternately: every stage keeps the longest time that failed and the shortest that polished, and the next trial
 tries the middle, with the other stage at its shortest polishing time. So the pair of shortest times always polished
-together in one trial. The search ends when both intervals are at most Resolution_s, or after MaxTrials.
+together in one trial. A trial with both times at most those of a failed trial is not run but counted as failed. The search ends when both intervals are at most Resolution_s, or after MaxTrials.
 Recipe:  3 µm = shortest 3 µm time + Buffer_s,  1 µm = shortest 1 µm time + Buffer_s,
          9 µm = (TargetDepth_um - removal of the 3 µm and 1 µm stages) / RemovalRate9um_um_s
 
-From Python, e.g. in the RASI control software (see RASIExample.py):
-    from RecipeGenerationLoop import RecipeGenerator, ControlVariables
+From Python, e.g. in the RASI control software (see RunRecipeSearch.py):
+    from RecipeSearch import RecipeGenerator, ControlVariables
     Generator = RecipeGenerator("<training run>", "22188_Sample1", ControlVariables(RemovalRate9um_um_s=..., ..., TargetDepth_um=...))
     Answer = {"Decision": "Trial", "NextTrial": Generator.FirstTrial()}
     while Answer["Decision"] == "Trial":
@@ -45,18 +45,19 @@ class ControlVariables:
     RemovalRate3um_um_s    : float = 0.0
     RemovalRate1um_um_s    : float = 0.0
     TargetDepth_um         : float = 0.0    # Material to remove per slice with the final recipe [µm]
-    Time9um_s              : float = 20.0   # 9 µm polishing at the start of every trial
+    Time9um_s              : float = 30.0   # 9 µm polishing at the start of every trial
 
     # Search
+    TimeStep_s             : float = 15.0   # All polishing times are multiples of this: the polisher runs blocks of 15, 30, 60, 120 and 240 s
     StartTime3um_s         : float = 60.0   # 3 µm and 1 µm times of the first trial; both are doubled until the surface is polished
     StartTime1um_s         : float = 60.0
     MaxTime_s              : float = 300.0  # Longest 3 µm or 1 µm time tried. If the surface is not polished then, the search stops
-    Resolution_s           : float = 10.0   # The bisection of a stage stops when its interval is at most this long
+    Resolution_s           : float = 15.0   # The bisection of a stage stops when its interval is at most this long
     MaxTrials              : int   = 12     # Upper limit of trials (each is a full 9-3-1 µm sequence with imaging)
     Buffer_s               : float = 15.0   # Added to the shortest 3 µm and 1 µm times, so deviations between slices are still polished
 
     # Decision per trial
-    TargetPolished_Percent : float = 90.0   # Polished if at least this share of all tiles is polished (and every image counts as polished, see ClassifyImage)
+    TargetPolished_Percent : float = 98.0   # Polished if at least this share of all tiles is polished (and every image counts as polished, see ClassifyImage)
     MaxUncertain_Percent   : float = 20.0   # and at most this share of the tiles is uncertain (confidence below LowConfidence_Percent of ClassifyImage)
 
 class RecipeGenerator():
@@ -66,6 +67,10 @@ class RecipeGenerator():
         Rates = [self.Controls.RemovalRate9um_um_s, self.Controls.RemovalRate3um_um_s, self.Controls.RemovalRate1um_um_s]
         if min(Rates) <= 0 or self.Controls.TargetDepth_um <= 0:
             raise ValueError("Give the removal rates of all three stages and the target depth (ControlVariables), all > 0")
+        C     = self.Controls
+        Times = [C.Time9um_s, C.StartTime3um_s, C.StartTime1um_s, C.MaxTime_s, C.Buffer_s]
+        if any(Seconds % C.TimeStep_s for Seconds in Times):
+            raise ValueError(f"All polishing times must be multiples of {C.TimeStep_s:g} s: {Times}")
         self.Classifier = Classifier or CI.ImageClassifier(NetworkRun)
         BaseDirectory   = os.path.dirname(os.path.abspath(__file__))
         self.OutputPath = f"{BaseDirectory}/Outputs/Recipe_{SampleName}_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -79,12 +84,15 @@ class RecipeGenerator():
         self.Trial    = {"9um": self.Controls.Time9um_s, "3um": self.Controls.StartTime3um_s, "1um": self.Controls.StartTime1um_s}
         self.Varied   = None                              # stage bisected in this trial, None while the start times are tried
         self.Number   = 0
+        self.Failed   = []                                # trials that were not polished
 
     def FirstTrial(self) -> dict:
         return dict(self.Trial)
 
     def Check(self, Images: list) -> dict:
         # Images: file paths or PIL images of the sample after the current trial. Returns the next trial or the result
+        if not Images:
+            raise ValueError("No images to classify")
         self.Number += 1
         Results = [self.Classifier.Classify(Picture, f"{self.OutputPath}/Trial{self.Number:02d}_Image{Index + 1:02d}_TileMap.png") for Index, Picture in enumerate(Images)]
         Tiles            = sum(R["Tiles"] for R in Results)
@@ -105,6 +113,8 @@ class RecipeGenerator():
                   "ScratchedImages": ScratchedImages, "Polished": Polished, "OutputPath": self.OutputPath}
 
         # Update the search with the result of this trial
+        if not Polished:
+            self.Failed.append((self.Number, dict(self.Trial)))
         if self.Varied is None:
             if not Polished:
                 if max(self.Trial[Stage] for Stage in STAGES) >= self.Controls.MaxTime_s:
@@ -120,15 +130,21 @@ class RecipeGenerator():
         else:
             self.Longest[self.Varied] = self.Trial[self.Varied]
 
-        # Next stage to bisect: alternately, as long as its interval is longer than Resolution_s
-        Open = [Stage for Stage in STAGES if self.Shortest[Stage] - self.Longest[Stage] > self.Controls.Resolution_s]
-        if not Open or self.Number >= self.Controls.MaxTrials:
-            return self.Finish(Answer | {"Decision": "Done", "Reason": "intervals of both stages within the resolution" if not Open else f"{self.Controls.MaxTrials} trials reached"})
-        Stage = next((Other for Other in Open if Other != self.Varied), Open[0])
-        self.Varied = Stage
-        self.Trial  = {"9um": self.Controls.Time9um_s} | {Other: self.Shortest[Other] for Other in STAGES}
-        self.Trial[Stage] = float(round((self.Shortest[Stage] + self.Longest[Stage]) / 2))
-        return self.Next(Answer, f"{Stage}: shortest polished {self.Shortest[Stage]:g} s, longest failed {self.Longest[Stage]:g} s")
+        while True:
+            # Next stage to bisect: alternately, as long as its interval is longer than Resolution_s
+            Open = [Stage for Stage in STAGES if self.Shortest[Stage] - self.Longest[Stage] > self.Controls.Resolution_s]
+            if not Open or self.Number >= self.Controls.MaxTrials:
+                return self.Finish(Answer | {"Decision": "Done", "Reason": "intervals of both stages within the resolution" if not Open else f"{self.Controls.MaxTrials} trials reached"})
+            Stage = next((Other for Other in Open if Other != self.Varied), Open[0])
+            self.Varied = Stage
+            self.Trial  = {"9um": self.Controls.Time9um_s} | {Other: self.Shortest[Other] for Other in STAGES}
+            self.Trial[Stage] = self.Controls.TimeStep_s * round((self.Shortest[Stage] + self.Longest[Stage]) / 2 / self.Controls.TimeStep_s)
+            # Not run if both times are at most those of a failed trial: it would fail as well (e.g. a failed start trial)
+            Known = next((Number for Number, Failed in self.Failed if all(self.Trial[Other] <= Failed[Other] for Other in STAGES)), None)
+            if Known is None:
+                return self.Next(Answer, f"{Stage}: shortest polished {self.Shortest[Stage]:g} s, longest failed {self.Longest[Stage]:g} s")
+            self.LogFile.W(f"  Skipped: {', '.join(f'{Other} {Seconds:g} s' for Other, Seconds in self.Trial.items())}, not polished as trial {Known} with longer times")
+            self.Longest[Stage] = self.Trial[Stage]
 
     def Next(self, Answer: dict, Reason: str) -> dict:
         self.LogFile.W(f"  Next trial: {', '.join(f'{Stage} {Seconds:g} s' for Stage, Seconds in self.Trial.items())} ({Reason})")
@@ -139,10 +155,12 @@ class RecipeGenerator():
             C = self.Controls
             Times   = {Stage: self.Shortest[Stage] + C.Buffer_s for Stage in STAGES}
             Removed = {"3um": C.RemovalRate3um_um_s * Times["3um"], "1um": C.RemovalRate1um_um_s * Times["1um"]}
-            Removed["9um"] = C.TargetDepth_um - Removed["3um"] - Removed["1um"]
-            Times["9um"]   = Removed["9um"] / C.RemovalRate9um_um_s
+            Exact9um       = (C.TargetDepth_um - Removed["3um"] - Removed["1um"]) / C.RemovalRate9um_um_s
+            Times["9um"]   = max(0.0, C.TimeStep_s * round(Exact9um / C.TimeStep_s))   # the polisher can only run multiples of TimeStep_s
+            Removed["9um"] = C.RemovalRate9um_um_s * Times["9um"]
             Recipe = {"Polishing_s": {Stage: round(Times[Stage], 1) for Stage in ("9um", "3um", "1um")},
                       "Removal_um": {Stage: round(Removed[Stage], 3) for Stage in ("9um", "3um", "1um")}, "TargetDepth_um": C.TargetDepth_um,
+                      "RecipeDepth_um": round(sum(Removed.values()), 3),
                       "ShortestPolished_s": self.Shortest, "Buffer_s": C.Buffer_s, "Trials": self.Number, "Network": self.Classifier.RunPath, "Settings": asdict(C)}
             if Times["9um"] < C.Time9um_s:
                 Recipe["Warning"] = f"The 9 µm time for the target depth is shorter than the {C.Time9um_s:g} s of the trials: the grinding scratches may remain"

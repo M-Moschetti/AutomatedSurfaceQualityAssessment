@@ -230,3 +230,6 @@ src/Models/*
 !src/Models/README.md
 # ViT-H+ feature files are generated locally with PreprocessImages.py (FeatureExtractor = "DINOv3-H16plus")
 *_DINOv3-H16plusFeatures.h5
+# RASI machine code: specific to the platform, contains machine addresses and the ZEN control token
+src/RASIMachine.py
+src/utils_adaptive.py

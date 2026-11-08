@@ -254,20 +254,22 @@ training run), also when nothing is added. For these, the test set of the traini
 existing and the new prototypes (`TestSet.log`, `ConfusionMatrix.csv`); the log reports how many test images are closest
 to a new prototype. The prototypes depend on the encoder: after retraining, add them again from the same images.
 
-**5. Generating a polishing recipe** (`src/RecipeGenerationLoop.py`): the operator enters the material removal rates of
+**5. Generating a polishing recipe** (`src/RecipeSearch.py`): the operator enters the material removal rates of
 the 9, 3 and 1 µm stages [µm/s] and the target removal depth per slice. Every trial is the full sequence on the RASI
-platform: 9 µm for a fixed time (20 s; removes the earlier scratches and leaves defined 9 µm scratches, so every trial
+platform: 9 µm for a fixed time (30 s; removes the earlier scratches and leaves defined 9 µm scratches, so every trial
 starts alike), then 3 µm and 1 µm for the trial's times, then images at several positions. `RecipeGenerator.Check`
-classifies them: polished means at least 90 % of all tiles polished, every image polished and at most 20 % uncertain
+classifies them: polished means at least 98 % of all tiles polished, every image polished and at most 20 % uncertain
 tiles. The start times (60 s for both stages) are doubled until they polish. Then the 3 µm and 1 µm times are bisected
 alternately: each stage keeps its longest failed and shortest polished time, and the next trial tries the middle with
-the other stage at its shortest polished time, until both intervals are at most 10 s (at most 12 trials). The recipe is:
+the other stage at its shortest polished time, until both intervals are at most 15 s (at most 12 trials). A trial with both times at most
+those of a failed trial is not run but counted as failed. All times are
+multiples of 15 s, because the polisher runs blocks of 15, 30, 60, 120 and 240 s. The recipe is:
 
 - 3 µm and 1 µm: the shortest polished times + 15 s each, so deviations between slices are still polished
-- 9 µm: (target depth − removal of the 3 and 1 µm stages) / 9 µm removal rate
+- 9 µm: (target depth − removal of the 3 and 1 µm stages) / 9 µm removal rate, rounded to the nearest 15 s
 
 ```python
-from RecipeGenerationLoop import RecipeGenerator, ControlVariables
+from RecipeSearch import RecipeGenerator, ControlVariables
 
 Controls  = ControlVariables(RemovalRate9um_um_s=0.05, RemovalRate3um_um_s=0.01, RemovalRate1um_um_s=0.003, TargetDepth_um=10)
 Generator = RecipeGenerator("<RunName>", "22188_Sample1", Controls)    # loads the network and DINOv3 once
@@ -281,13 +283,15 @@ The decision is made automatically, without input from the operator. `NotPolishe
 even at the time limit (300 s of 3 µm or 1 µm polishing). All of these values are set in its `ControlVariables`. The results are written to `src/Outputs/Recipe_<SampleName>_<date and time>/`:
 `Trials.csv`, `RecipeGeneration.log`, a tile map of every image, and `Recipe.json` with the polishing times and the
 removal per stage. Compared with the thesis, the search is a proper bisection (the thesis added or subtracted half of the
-current time, which does not converge on the shortest time) and polishing times are not limited to 30 s blocks.
+current time, which does not converge on the shortest time).
 
-`src/RASIExample.py` shows how the RASI control script uses it, moving the images of every trial away so the next
-trial only sees its own. The machine calls are collected in one class, so the example runs as a simulation with a
-given "true" shortest time per stage and folders of polished and scratched images:
-`python src/RASIExample.py --network <RunName> --rates <R9> <R3> <R1> --depth <µm> --polished <folder> --scratched <folder> [--minimum <T3> <T1>]`.
-On the machine, fill in `RASI.Polish` and `RASI.AcquireImages` with the calls of the control software.
+`src/RunRecipeSearch.py` runs this search on RASI. Start it from the folder of the RASI control software (where
+`mikroskop_jobs.json` and `MicroscopeImages\` are), with the sample on the microscope:
+`python <repository>\src\RunRecipeSearch.py --network <RunName> --rates <R9> <R3> <R1> --depth <µm> [--sample <SampleName>]`.
+The outputs are written to `<repository>\src\Outputs\` regardless of the folder. The machine control is specific to the
+platform and not part of this repository. Without it, `--simulation` runs the search from any folder, with a given
+"true" shortest time per stage and folders of polished and scratched images: add
+`--simulation --polished <folder> --scratched <folder> [--minimum <T3> <T1>]`.
 
 **6. Comparison with the conventional method** (`src/HoughComparison.py`): the Hough transform method of the thesis,
 applied to whole micrographs and independent of the network. Edges are detected (Canny) and every edge pixel votes for
@@ -324,8 +328,8 @@ src/
 ├── TrainNetwork.py           Training, validation and testing of the prototypical network
 ├── ClassifyImage.py          Classification of complete microscope images (e.g. in the RASI loop)
 ├── AddNewMaterialPrototype.py  Prototypes of a new material from a few reference images (optional)
-├── RecipeGenerationLoop.py   Polishing recipe: shortest 3 and 1 µm times and the 9 µm time for the depth (called by RASI)
-├── RASIExample.py            Example of the RASI control loop around RecipeGenerationLoop.py (with a simulation)
+├── RecipeSearch.py           Polishing recipe: shortest 3 and 1 µm times and the 9 µm time for the depth (called by RASI)
+├── RunRecipeSearch.py        Runs RecipeSearch.py on the RASI machine or as a simulation
 ├── HoughComparison.py        Conventional comparison method of the thesis (Hough transform on whole micrographs)
 ├── DataSets/                 Feature files (and images, not tracked)
 ├── Models/                   DINOv3 weights (not tracked)
