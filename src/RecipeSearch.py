@@ -57,7 +57,7 @@ class ControlVariables:
     Buffer_s               : float = 15.0   # Added to the shortest 3 µm and 1 µm times, so deviations between slices are still polished
 
     # Decision per trial
-    TargetPolished_Percent : float = 98.0   # Polished if at least this share of all tiles is polished (and every image counts as polished, see ClassifyImage)
+    TargetPolished_Percent : float = 95.0   # Polished if at least this share of all tiles is polished (and every image counts as polished, see ClassifyImage)
     MaxUncertain_Percent   : float = 20.0   # and at most this share of the tiles is uncertain (confidence below LowConfidence_Percent of ClassifyImage)
 
 class RecipeGenerator():

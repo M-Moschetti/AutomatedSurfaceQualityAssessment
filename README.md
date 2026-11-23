@@ -258,7 +258,7 @@ to a new prototype. The prototypes depend on the encoder: after retraining, add 
 the 9, 3 and 1 µm stages [µm/s] and the target removal depth per slice. Every trial is the full sequence on the RASI
 platform: 9 µm for a fixed time (30 s; removes the earlier scratches and leaves defined 9 µm scratches, so every trial
 starts alike), then 3 µm and 1 µm for the trial's times, then images at several positions. `RecipeGenerator.Check`
-classifies them: polished means at least 98 % of all tiles polished, every image polished and at most 20 % uncertain
+classifies them: polished means at least 95 % of all tiles polished, every image polished and at most 20 % uncertain
 tiles. The start times (60 s for both stages) are doubled until they polish. Then the 3 µm and 1 µm times are bisected
 alternately: each stage keeps its longest failed and shortest polished time, and the next trial tries the middle with
 the other stage at its shortest polished time, until both intervals are at most 15 s (at most 12 trials). A trial with both times at most
